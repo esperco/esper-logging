@@ -1,0 +1,12 @@
+OCAML_LIBS = $(OCAML_LIBS_logging)
+
+FILES[] =
+
+OCamlLibrary(logging, $(FILES))
+Meta(logging)
+
+.DEFAULT: META logging.cma logging.cmxa
+
+.PHONY: clean
+clean:
+  rm -f *.o *.a *.cm* *~ *.annot *.run *.opt $(ATDGEN_OUTFILES)
