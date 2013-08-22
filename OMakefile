@@ -1,6 +1,7 @@
 OCAML_LIBS = $(OCAML_LIBS_logging)
 
 FILES[] =
+  logging
 
 OCamlLibrary(logging, $(FILES))
 Meta(logging)
