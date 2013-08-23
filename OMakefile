@@ -11,4 +11,4 @@ Meta(logging)
 
 .PHONY: clean
 clean:
-  rm -f *.o *.a *.cm* *~ *.annot *.run *.opt $(ATDGEN_OUTFILES)
+  rm -f *.o *.a *.cm* *~ *.annot *.run *.opt META $(ATDGEN_OUTFILES)
