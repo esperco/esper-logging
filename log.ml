@@ -56,13 +56,6 @@ let debug f =
 let string_of_exn e =
   Util_exn.string_of_exn e
 
-let () =
-  logf `Info "Setting Lwt.async_exception_hook";
-  Lwt.async_exception_hook :=
-    (fun e ->
-      logf `Error "Async exception caught: %s" (string_of_exn e)
-    )
-
 let tests = [
   "hide_sensitive_fields", (fun () ->
     hide_sensitive_fields
