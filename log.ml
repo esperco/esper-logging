@@ -5,8 +5,12 @@ type level = [ `Debug | `Info | `Warning | `Error | `Critical ]
 
 let min_level = ref `Info
 let level = min_level
-let service = ref ""
 let log_folder = "/var/log/wolverine"
+
+let service = ref ""
+
+let set_service s =
+  service := "[" ^ s ^ "] "
 
 let string_of_level = function
   | `Debug -> "debug"
@@ -44,7 +48,7 @@ let () =
 
 let log level s =
   if int level >= int !min_level then
-    eprintf "[%s] [%s] [%s] %s\n%!"
+    eprintf "[%s] %s[%s] %s\n%!"
       (date ()) !service (string_of_level level) (hide_sensitive_fields s)
 
 let logf level msgf =

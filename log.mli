@@ -6,8 +6,10 @@ val log_folder : string
 val level : level ref
   (** Log level. Initial value: [`Info] *)
 
-val service : string ref
-  (** Name of the current service. Initial value: [""] *)
+val set_service : string -> unit
+  (** Name of the current service.
+      If defined, this is printed between square brackets
+      on each new log line. *)
 
 val logf : level -> ('a, unit, string, unit) format4 -> 'a
   (** Like printf but with a log level before the format string *)
