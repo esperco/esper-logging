@@ -11,7 +11,7 @@
   then we assume its timestamp is the same as the last one seen.
 *)
 
-   
+
 open Batteries
 
 module LogLines = Map.Make(struct
