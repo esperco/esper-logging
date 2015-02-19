@@ -4,7 +4,10 @@
   in timestamp order.
 
   If multiple lines share a timestamp, we output all lines from the first file
-  in line number order, then all lines from the second file, etc.
+  in line number order, then all lines from the second file, etc. To do this,
+  the value we store in the Map for each timestamp is a Hashtbl keyed by
+  filename, whose value is the (reverse-ordered) lines from that file with the
+  corresponding timestamp.
 
   A log line is expected to start with its timestamp in square brackets. If it
   does not, as occurs with pretty-printed JSON and exception stack traces,
@@ -28,14 +31,14 @@ let parse_timestamp line =
   | Not_found -> None
   | Invalid_argument "Netdate.parse" -> failwith ("Corrupt timestamp: " ^ line)
 
-let add_or_replace tbl filename line =
+let add_or_replace_line tbl filename line =
   try
     let lines_from_same_file = Hashtbl.find tbl filename in
     Hashtbl.replace tbl filename (line :: lines_from_same_file)
   with Not_found ->
     Hashtbl.add tbl filename [line]
 
-let create_new filename line =
+let create_new_table filename line =
   let lines_by_file = Hashtbl.create 8 in
   Hashtbl.add lines_by_file filename [line];
   lines_by_file
@@ -45,16 +48,16 @@ let parse log filename input =
     Enum.fold (fun (log, last_known_ts) line ->
       (match parse_timestamp line with
       | None ->
-          let prevs = LogLines.find last_known_ts log in
-          add_or_replace prevs filename line;
+          let lines_with_last_ts = LogLines.find last_known_ts log in
+          add_or_replace_line lines_with_last_ts filename line;
           (log, last_known_ts)
       | Some ts ->
           (try
             let lines_with_same_ts = LogLines.find ts log in
-            add_or_replace lines_with_same_ts filename line;
+            add_or_replace_line lines_with_same_ts filename line;
             (log, ts)
           with Not_found ->
-            let lines_by_file = create_new filename line in
+            let lines_by_file = create_new_table filename line in
             (LogLines.add ts lines_by_file log, ts)
           )
       )
@@ -67,7 +70,7 @@ let parse log filename input =
       | None ->
           failwith ("Log file " ^ filename ^ " must start with a timestamp")
       | Some first_ts ->
-          let lines_by_file = create_new filename first_line in
+          let lines_by_file = create_new_table filename first_line in
           Hashtbl.add lines_by_file filename [first_line];
           fst (read (LogLines.add first_ts lines_by_file log) first_ts)
       )
@@ -84,6 +87,15 @@ let print log filenames output =
     ) filenames
   ) log;
   BatIO.close_out output
+
+let merge filenames output =
+  let log =
+    List.fold_left (fun log filename ->
+      let input = File.lines_of filename in
+      parse log filename input
+    ) LogLines.empty filenames
+  in
+  print log filenames output
 
 
 module Test = struct
