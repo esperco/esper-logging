@@ -2,6 +2,7 @@ OCAML_LIBS = $(OCAML_LIBS_logging)
 
 FILES[] =
   log
+  log_merge
 
 OCamlLibrary(logging, $(FILES))
 Meta(logging)
