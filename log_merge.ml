@@ -1,17 +1,6 @@
 (*
-  We process each log file line by line, scanning the lines into memory.
-  They're kept sorted by timestamp in a Map, since we want the output merged
-  in timestamp order.
-
-  If multiple lines share a timestamp, we output all lines from the first file
-  in line number order, then all lines from the second file, etc. To do this,
-  the value we store in the Map for each timestamp is a Hashtbl keyed by
-  filename, whose value is the (reverse-ordered) lines from that file with the
-  corresponding timestamp.
-
-  A log line is expected to start with its timestamp in square brackets. If it
-  does not, as occurs with pretty-printed JSON and exception stack traces,
-  then we assume its timestamp is the same as the last one seen.
+   This merges multiple log files into one file, sorted by timestamp.
+   It can start from a previous position, for periodic incremental merging.
 *)
 
 
@@ -25,6 +14,7 @@ module LogEntries = Map.Make(struct
   let compare = Pervasives.compare
 end)
 
+(* I don't like exceptions unless I need to unwind the stack. And I don't. *)
 let next_line input =
   try Some (input_line input)
   with End_of_file -> None
@@ -38,6 +28,7 @@ let parse_timestamp line =
   | Not_found -> None
   | Invalid_argument "Netdate.parse" -> failwith ("Corrupt timestamp: " ^ line)
 
+(* This is a new entry for the given timestamp, so add it to the table. *)
 let add_new_log_entry ts_tbl filename entry =
   try
     let entries_from_same_file = Hashtbl.find ts_tbl filename in
@@ -45,8 +36,10 @@ let add_new_log_entry ts_tbl filename entry =
        will call List.rev when printing the log *)
     Hashtbl.replace ts_tbl filename (entry :: entries_from_same_file)
   with Not_found ->
+    (* First entry for this ts in this file *)
     Hashtbl.add ts_tbl filename [entry]
 
+(* This is a continuation of a previous timestamped entry, so append it. *)
 let append_to_previous_entry ts_tbl filename line =
   match Hashtbl.find ts_tbl filename with
   | [] -> assert false (* Log_merge.parse ensures at least one entry *)
@@ -54,6 +47,8 @@ let append_to_previous_entry ts_tbl filename line =
       let appended_entry = last_timestamped_entry ^ "\n" ^ line in
       Hashtbl.replace ts_tbl filename (appended_entry :: rest)
 
+(* This is the first entry for this timestamp in any file parsed so far,
+   so create a new table containing it. *)
 let create_ts_table filename line =
   let entries_by_file = Hashtbl.create 8 in
   Hashtbl.add entries_by_file filename [line];
@@ -63,7 +58,7 @@ let create_ts_table filename line =
    (with an extra - 1 for the newline omitted by input_line).
    We need to do this at the end of parsing, because the last entry could be
    continued on subsequent lines without timestamps, which would make our next
-   parsing round fail (log parsing must begin with a timestamp).
+   parsing round fail (log parsing must always begin with a timestamp).
 *)
 let rewind_one_entry log filename input last_known_ts =
   let entries_with_last_ts = LogEntries.find last_known_ts log in
@@ -71,8 +66,10 @@ let rewind_one_entry log filename input last_known_ts =
   | [] -> assert false (* Log_merge.parse ensures at least one entry *)
   | last_timestamped_entry :: rest ->
       Hashtbl.replace entries_with_last_ts filename rest;
+      (* This becomes the final result of Log_merge.parse_until_end *)
       (log, pos_in input - String.length last_timestamped_entry - 1)
 
+(* Main parsing loop *)
 let rec parse_until_end log filename input last_known_ts =
   match next_line input with
   | None ->
@@ -81,30 +78,40 @@ let rec parse_until_end log filename input last_known_ts =
   | Some line ->
       (match parse_timestamp line with
       | None ->
+          (* Continuation of previous log entry *)
           let entries_with_last_ts = LogEntries.find last_known_ts log in
           append_to_previous_entry entries_with_last_ts filename line;
           parse_until_end log filename input last_known_ts
       | Some ts ->
+          (* Start of new log entry *)
           (try
             let entries_with_same_ts = LogEntries.find ts log in
             add_new_log_entry entries_with_same_ts filename line;
             parse_until_end log filename input ts
           with Not_found ->
+            (* First log entry seen for this timestamp *)
             let entries_by_file = create_ts_table filename line in
             let updated_log = LogEntries.add ts entries_by_file log in
             parse_until_end updated_log filename input ts
           )
       )
 
+(* Parse log entries from the given filename starting at position
+   into the LogEntries.t log. Return the updated log, along with a
+   new position from which we can resume parsing when more data is
+   available.
+*)
 let parse log filename position =
   let input = open_in filename in
-  seek_in input position;
+  seek_in input position; (* TODO Handle rotated log case? *)
   match next_line input with
   | None ->
       (* No new data to parse *)
       close_in input;
       (log, position)
   | Some first_line ->
+      (* Make sure we're starting from a valid log entry,
+         then call parse_until_end to finish consuming the file *)
       (match parse_timestamp first_line with
       | None ->
           failwith (
@@ -124,6 +131,11 @@ let parse log filename position =
           log_with_parsed_input
       )
 
+(* Print the entries from the LogEntries.t log in timestamp sorted order.
+   When multiple files have entries with the same timestamp, print the entries
+   in the order they appeared in their file, and process files in the order
+   given by filenames.
+*)
 let print log filenames output =
   LogEntries.iter (fun _ lines_by_file ->
     List.iter (fun filename ->
@@ -136,6 +148,11 @@ let print log filenames output =
     ) filenames
   ) log
 
+(* Given a list of (filename, start_position) pairs,
+   parse all the files into the LogEntries.t log.
+   Return the updated log, along with a list of
+   (filename, end_position) pairs.
+*)
 let merge log files =
   List.fold_right (fun (filename, start_pos) (log, ends) ->
     let (log, end_pos) = parse log filename start_pos in
