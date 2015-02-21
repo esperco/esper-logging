@@ -8,6 +8,8 @@
    where type filename = string and entry = string.
    So, a LogEntries.t maps timestamps to the ordered entries from each file
    which share that timestamp, and it keeps everything ordered by timestamp.
+   Each entry starts with the line containing its timestamp, plus any
+   following lines until the next timestamped line.
 *)
 module LogEntries = Map.Make(struct
   type t = Nldate.t
@@ -49,9 +51,9 @@ let append_to_previous_entry ts_tbl filename line =
 
 (* This is the first entry for this timestamp in any file parsed so far,
    so create a new table containing it. *)
-let create_ts_table filename line =
+let create_ts_table filename entry =
   let entries_by_file = Hashtbl.create 8 in
-  Hashtbl.add entries_by_file filename [line];
+  Hashtbl.add entries_by_file filename [entry];
   entries_by_file
 
 (* Remove the last entry and subtract its length from the input position
@@ -125,28 +127,12 @@ let parse log filename position =
           Hashtbl.add entries_by_file filename [first_line];
           let log_with_parsed_input =
             let updated_log = LogEntries.add first_ts entries_by_file log in
+            (* Enter main parsing loop *)
             parse_until_end updated_log filename input first_ts
           in
           close_in input;
           log_with_parsed_input
       )
-
-(* Print the entries from the LogEntries.t log in timestamp sorted order.
-   When multiple files have entries with the same timestamp, print the entries
-   in the order they appeared in their file, and process files in the order
-   given by filenames.
-*)
-let print log filenames output =
-  LogEntries.iter (fun _ lines_by_file ->
-    List.iter (fun filename ->
-      try
-        let lines = Hashtbl.find lines_by_file filename in
-        List.iter (fun line ->
-          BatIO.nwrite output (line ^ "\n")
-        ) (List.rev lines)
-      with Not_found -> ()
-    ) filenames
-  ) log
 
 (* Given a list of (filename, start_position) pairs,
    parse all the files into the LogEntries.t log.
@@ -158,6 +144,23 @@ let merge log files =
     let (log, end_pos) = parse log filename start_pos in
     (log, (filename, end_pos) :: ends)
   ) files (log, [])
+
+(* Print the entries from the LogEntries.t log in timestamp sorted order.
+   When multiple files have entries with the same timestamp, print the entries
+   in the order they appeared in their file, and process files in the order
+   given by filenames.
+*)
+let print log filenames output =
+  LogEntries.iter (fun _ entries_by_file ->
+    List.iter (fun filename ->
+      try
+        let entries = Hashtbl.find entries_by_file filename in
+        List.iter (fun entry ->
+          BatIO.nwrite output (entry ^ "\n")
+        ) (List.rev entries)
+      with Not_found -> ()
+    ) filenames
+  ) log
 
 
 module Test = struct
