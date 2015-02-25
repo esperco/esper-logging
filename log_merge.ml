@@ -162,6 +162,46 @@ let print log filenames output =
     ) filenames
   ) log
 
+(* Replace the first occurrence of (key, _) in lst with (key, value).
+   If no binding is found, create one. *)
+let rec replace_assoc key value = function
+  | [] -> [(key, value)]
+  | (k, v) :: rest ->
+      if k = key then (key, value) :: rest
+      else (k, v) :: replace_assoc key value rest
+
+let append_new_entries ~from_inputs ~at_positions ~to_output =
+  let open Yojson.Basic.Util in
+  (* Read start positions from JSON file *)
+  let positions_file = open_in_gen [Open_creat] 0o666 at_positions in
+  let json_data = try input_line positions_file with End_of_file -> "" in
+  close_in positions_file;
+  let start_positions =
+    if json_data = "" then `Assoc []
+    else Yojson.Basic.from_string json_data
+  in
+  (* Look up the position for each input file *)
+  let positioned_inputs =
+    List.map (fun input_path ->
+      match member input_path start_positions |> to_int_option with
+      | None -> (input_path, 0)
+      | Some i -> (input_path, i)
+    ) from_inputs
+  in
+  (* Merge from the start positions and print the result *)
+  let log = LogEntries.empty in
+  let (merged, end_inputs) = merge log positioned_inputs in
+  print merged (List.map fst end_inputs) to_output;
+  (* Save our end positions to the JSON file *)
+  let end_positions =
+    List.fold_left (fun positions (filename, end_pos) ->
+      replace_assoc filename (`Int end_pos) positions
+    ) (to_assoc start_positions) end_inputs
+  in
+  let positions_file = open_out at_positions in
+  let json_data = Yojson.Basic.to_string (`Assoc end_positions) in
+  output_string positions_file (json_data ^ "\n");
+  close_out positions_file
 
 module Test = struct
   let test_log_merge () =
@@ -183,10 +223,13 @@ continuation of foo line 2
     output_string bar_out bar_data_1; flush bar_out;
 
     (* Merge the first round of log data *)
-    let start_inputs = [(foo_path, 0); (bar_path, 0)] in
-    let start_log = LogEntries.empty in
-    let (mid_log, mid_inputs) = merge start_log start_inputs in
-    assert (mid_inputs = [(foo_path, 130); (bar_path, 86)]);
+    let positions_path = "/tmp/positions.json" in
+    Unix.unlink positions_path; (* rm *)
+    let string_buffer = BatIO.output_string () in
+    append_new_entries
+      ~from_inputs:[foo_path; bar_path]
+      ~at_positions:positions_path
+      ~to_output:string_buffer;
 
     (* Append some more log data to the temp files *)
     let foo_data_2 = "\
@@ -201,13 +244,13 @@ continuation of bar line 3 part 2/2
     output_string bar_out bar_data_2; close_out bar_out;
 
     (* Merge the second round, starting from where the first left off *)
-    let (end_log, end_inputs) = merge mid_log mid_inputs in
-    assert (end_inputs = [(foo_path, 259); (bar_path, 218)]);
+    append_new_entries
+      ~from_inputs:[foo_path; bar_path]
+      ~at_positions:positions_path
+      ~to_output:string_buffer;
 
     (* The result should be sorted and missing the last line of each file *)
-    let output = BatIO.output_string () in
-    print end_log (List.map fst end_inputs) output;
-    let result = BatIO.close_out output in
+    let result = BatIO.close_out string_buffer in
     let expected = "\
 [2015-02-19T10:29:54.482-08:00] foo line 1
 [2015-02-19T10:29:54.528-08:00] bar line 1
