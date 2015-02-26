@@ -3,6 +3,9 @@
    It can start from a previous position, for periodic incremental merging.
 *)
 
+let log_merge_folder = Log.log_folder ^ "/merged"
+let log_merge_output = log_merge_folder ^ "/api.log"
+let positions_file = log_merge_folder ^ "/positions.json"
 
 (* We'll use a (filename, entry list) Hashtbl.t LogEntries.t,
    where type filename = string and entry = string.
@@ -202,6 +205,20 @@ let append_new_entries ~from_inputs ~at_positions ~to_output =
   let json_data = Yojson.Basic.to_string (`Assoc end_positions) in
   output_string positions_file (json_data ^ "\n");
   close_out positions_file
+
+let run_log_merge () =
+  let inputs = Array.to_list (Sys.readdir Log.log_folder) in
+  let output =
+    BatFile.open_out
+      ~mode:[`create; `append]
+      ~perm:(BatFile.unix_perm 0o666)
+      log_merge_output
+  in
+  append_new_entries
+    ~from_inputs:inputs
+    ~at_positions:positions_file
+    ~to_output:output;
+  BatIO.close_out output
 
 module Test = struct
   let test_log_merge () =
