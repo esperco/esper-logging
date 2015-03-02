@@ -21,4 +21,8 @@ val debug : (unit -> string) -> unit
 val string_of_exn : exn -> string
   (** String representation of an exception + stack backtrace *)
 
+val with_request_id : (unit -> 'a) -> 'a
+  (** where 'a can be an lwt thread, within which the random request ID
+      is logged by each logf call. *)
+
 val tests : (string * (unit -> bool)) list
