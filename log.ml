@@ -46,10 +46,25 @@ let () =
        ";alksjdf;asdpasswordfja;slkdfa;sdkfjaspasSwordl;kfasdf"
      = ";alksjdf;asdpassword********************sSword********")
 
+let request_id_key = Lwt.new_key ()
+
+let get_request_id () =
+  match Lwt.get request_id_key with
+  | None -> ""
+  | Some s -> s
+
+let with_request_id f =
+  let request_id = Util_rng.hex 4 in
+  Lwt.with_value request_id_key (Some request_id) f
+
 let log level s =
   if int level >= int !min_level then
-    eprintf "[%s] %s[%s] %s\n%!"
-      (date ()) !service (string_of_level level) (hide_sensitive_fields s)
+    eprintf "[%s] %s[%s] [%s] %s\n%!"
+      (date ())
+      !service
+      (string_of_level level)
+      (get_request_id ())
+      (hide_sensitive_fields s)
 
 let logf level msgf =
   Printf.kprintf (log level) msgf
