@@ -1,0 +1,48 @@
+We have multiple API server instances running across different machines. These
+are coordinated by a central build server. Each instance writes to its own log
+file, in /var/log/wolverine/api_PORT.log. When debugging, we want to view all
+the log files merged together into one, so we can see the sequence of events
+surrounding an error, even across machines. We'll keep this merged log file on
+the build machine, but it should only go back two weeks.
+
+Here's how we accomplish this:
+
+On the API machines, there is one log file per instance per week: e.g.
+api_40001.log.1, api_40001.log.2, api_40001.log.3, etc. The one with the
+highest number is the current log file for that instance, and api_40001.log is
+a symbolic link to this file. Old log files will stay around until we decide
+to delete them.
+
+To rotate logs, a cron job running on each API machine once a week sends a
+SIGHUP to all wolverine processes on that machine. This will make the server
+close its current log file, create a new one with the next highest number,
+move the link, and open the new file.
+
+On the build machine, we want to keep the latest two log files from each API
+machine. With two machines and one instance each, we could have:
+
+host1_40001.log.6
+host1_40001.log.7
+host2_40001.log.6
+host2_40001.log.7
+merged.log
+positions.json
+
+A cron job running on the build machine keeps these files up to date. Every
+few minutes, it connects to each API machine and lists its log files to find
+the ones with the two highest numbers for each instance.
+
+Suppose for host1_40001 it finds that 6 and 7 are still the highest. Since
+both of those files already exist on the build machine, we can rsync --append
+the latest data over. If all the highest numbered logs for every instance
+already exist like this, which should be the common case since rotation is
+infrequent, we can run the log merging code from our previous positions in
+those files (stored in positions.json) and append the output to merged.log.
+
+However, suppose for host2_40001 it finds that 7 and 8 are highest: in this
+case, we can append to the existing 7, but we want to copy over 8 and delete 6
+(or any host2_40001.log with a number less than 6). Since we deleted a file,
+there is old data from it still in merged.log that we need to clear out, so we
+delete merged.log and positions.json, then run the merge from the beginning.
+The idea is that merged.log will contain no less than the latest week and no
+more than the latest two weeks.
