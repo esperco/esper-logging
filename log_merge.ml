@@ -3,7 +3,7 @@
    It can start from a previous position, for periodic incremental merging.
 *)
 
-let log_merge_folder = Log.log_folder ^ "/merged"
+let log_merge_folder = (*Log.log_folder ^ "/merged"*) "/tmp/merged"
 let log_merge_output = log_merge_folder ^ "/api.log"
 let positions_file = log_merge_folder ^ "/positions.json"
 
@@ -27,7 +27,7 @@ let next_line input =
 (* Extract timestamp from lines formatted like "^[timestamp] ...$" *)
 let parse_timestamp line =
   try
-    let subs = Pcre.exec ~pat:"\\[([^]]*)\\]" line in
+    let subs = Pcre.exec ~pat:"^\\[([^]]*)\\]" line in
     Some (Nldate.parse (Pcre.get_substring subs 1))
   with
   | Not_found -> None
@@ -206,8 +206,8 @@ let append_new_entries ~from_inputs ~at_positions ~to_output =
   output_string positions_file (json_data ^ "\n");
   close_out positions_file
 
-let run_log_merge () =
-  let inputs = Array.to_list (Sys.readdir Log.log_folder) in
+let main ~offset =
+  let inputs = Array.to_list (Sys.readdir (*Log.log_folder*) "/tmp/testing") in
   let output =
     BatFile.open_out
       ~mode:[`create; `append]
@@ -215,7 +215,7 @@ let run_log_merge () =
       log_merge_output
   in
   append_new_entries
-    ~from_inputs:inputs
+    ~from_inputs:(List.map (fun x -> "/tmp/testing/" ^ x) inputs)
     ~at_positions:positions_file
     ~to_output:output;
   BatIO.close_out output
