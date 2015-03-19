@@ -7,7 +7,7 @@ the build machine, but it should only go back two weeks.
 
 Here's how we accomplish this:
 
-On the API machines, there is one log file per instance per week: e.g.
+On the API machines, there is one log file per instance per week:
 api_40001.log.1, api_40001.log.2, api_40001.log.3, etc. The one with the
 highest number is the current log file for that instance, and api_40001.log is
 a symbolic link to this file. Old log files will stay around until we decide
