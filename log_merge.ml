@@ -3,7 +3,7 @@
    It can start from a previous position, for periodic incremental merging.
 *)
 
-let log_merge_folder = (*Log.log_folder ^ "/merged"*) "/tmp/merged"
+let log_merge_folder = Log.log_folder ^ "/merged"
 let log_merge_output = log_merge_folder ^ "/api.log"
 let positions_file = log_merge_folder ^ "/positions.json"
 
@@ -207,7 +207,14 @@ let append_new_entries ~from_inputs ~at_positions ~to_output =
   close_out positions_file
 
 let main ~offset =
-  let inputs = Array.to_list (Sys.readdir (*Log.log_folder*) "/tmp/testing") in
+  let dirlist = Array.to_list (Sys.readdir Log.log_folder) in
+  let inputs =
+    BatList.filter_map (fun filename ->
+      if BatString.exists filename ".log."
+      then Some (Log.log_folder ^ "/" ^ filename)
+      else None
+    ) dirlist
+  in
   let output =
     BatFile.open_out
       ~mode:[`create; `append]
@@ -215,7 +222,7 @@ let main ~offset =
       log_merge_output
   in
   append_new_entries
-    ~from_inputs:(List.map (fun x -> "/tmp/testing/" ^ x) inputs)
+    ~from_inputs:inputs
     ~at_positions:positions_file
     ~to_output:output;
   BatIO.close_out output
