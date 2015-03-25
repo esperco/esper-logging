@@ -248,7 +248,7 @@ continuation of foo line 2
 
     (* Merge the first round of log data *)
     let positions_path = "/tmp/positions.json" in
-    Unix.unlink positions_path; (* rm *)
+    (try Unix.unlink positions_path with Unix.Unix_error _ -> ()); (* rm *)
     let string_buffer = BatIO.output_string () in
     append_new_entries
       ~from_inputs:[foo_path; bar_path]
