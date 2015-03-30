@@ -7,18 +7,6 @@ let log_merge_folder = Log.log_folder ^ "/merged"
 let log_merge_output = log_merge_folder ^ "/api.log"
 let positions_file = log_merge_folder ^ "/positions.json"
 
-(* We'll use a (filename, entry list) Hashtbl.t LogEntries.t,
-   where type filename = string and entry = string.
-   So, a LogEntries.t maps timestamps to the ordered entries from each file
-   which share that timestamp, and it keeps everything ordered by timestamp.
-   Each entry starts with the line containing its timestamp, plus any
-   following lines until the next timestamped line.
-*)
-module LogEntries = Map.Make(struct
-  type t = Nldate.t
-  let compare = Pervasives.compare
-end)
-
 (* I don't like exceptions unless I need to unwind the stack. And I don't. *)
 let next_line input =
   try Some (input_line input)
@@ -33,138 +21,6 @@ let parse_timestamp line =
   | Not_found -> None
   | Invalid_argument "Netdate.parse" -> failwith ("Corrupt timestamp: " ^ line)
 
-(* This is a new entry for the given timestamp, so add it to the table. *)
-let add_new_log_entry ts_tbl filename entry =
-  try
-    let entries_from_same_file = Hashtbl.find ts_tbl filename in
-    (* Keep entries with same ts and file in reverse order;
-       will call List.rev when printing the log *)
-    Hashtbl.replace ts_tbl filename (entry :: entries_from_same_file)
-  with Not_found ->
-    (* First entry for this ts in this file *)
-    Hashtbl.add ts_tbl filename [entry]
-
-(* This is a continuation of a previous timestamped entry, so append it. *)
-let append_to_previous_entry ts_tbl filename line =
-  match Hashtbl.find ts_tbl filename with
-  | [] -> assert false (* Log_merge.parse ensures at least one entry *)
-  | last_timestamped_entry :: rest ->
-      let appended_entry = last_timestamped_entry ^ "\n" ^ line in
-      Hashtbl.replace ts_tbl filename (appended_entry :: rest)
-
-(* This is the first entry for this timestamp in any file parsed so far,
-   so create a new table containing it. *)
-let create_ts_table filename entry =
-  let entries_by_file = Hashtbl.create 8 in
-  Hashtbl.add entries_by_file filename [entry];
-  entries_by_file
-
-(* Remove the last entry and subtract its length from the input position
-   (with an extra - 1 for the newline omitted by input_line).
-   We need to do this at the end of parsing, because the last entry could be
-   continued on subsequent lines without timestamps, which would make our next
-   parsing round fail (log parsing must always begin with a timestamp).
-*)
-let rewind_one_entry log filename input last_known_ts =
-  let entries_with_last_ts = LogEntries.find last_known_ts log in
-  match Hashtbl.find entries_with_last_ts filename with
-  | [] -> assert false (* Log_merge.parse ensures at least one entry *)
-  | last_timestamped_entry :: rest ->
-      Hashtbl.replace entries_with_last_ts filename rest;
-      (* This becomes the final result of Log_merge.parse_until_end *)
-      (log, pos_in input - String.length last_timestamped_entry - 1)
-
-(* Main parsing loop *)
-let rec parse_until_end log filename input last_known_ts =
-  match next_line input with
-  | None ->
-      (* Reached EOF; rewind to just before the last timestamp seen *)
-      rewind_one_entry log filename input last_known_ts
-  | Some line ->
-      (match parse_timestamp line with
-      | None ->
-          (* Continuation of previous log entry *)
-          let entries_with_last_ts = LogEntries.find last_known_ts log in
-          append_to_previous_entry entries_with_last_ts filename line;
-          parse_until_end log filename input last_known_ts
-      | Some ts ->
-          (* Start of new log entry *)
-          (try
-            let entries_with_same_ts = LogEntries.find ts log in
-            add_new_log_entry entries_with_same_ts filename line;
-            parse_until_end log filename input ts
-          with Not_found ->
-            (* First log entry seen for this timestamp *)
-            let entries_by_file = create_ts_table filename line in
-            let updated_log = LogEntries.add ts entries_by_file log in
-            parse_until_end updated_log filename input ts
-          )
-      )
-
-(* Parse log entries from the given filename starting at position
-   into the LogEntries.t log. Return the updated log, along with a
-   new position from which we can resume parsing when more data is
-   available.
-*)
-let parse log filename position =
-  let input = open_in filename in
-  seek_in input position; (* TODO Handle rotated log case? *)
-  match next_line input with
-  | None ->
-      (* No new data to parse *)
-      close_in input;
-      (log, position)
-  | Some first_line ->
-      (* Make sure we're starting from a valid log entry,
-         then call parse_until_end to finish consuming the file *)
-      (match parse_timestamp first_line with
-      | None ->
-          failwith (
-            Printf.sprintf
-              "Error parsing log file %s starting at position %d: \
-               expected timestamped line, got:\n%s"
-              filename position first_line
-          )
-      | Some first_ts ->
-          let entries_by_file = create_ts_table filename first_line in
-          Hashtbl.add entries_by_file filename [first_line];
-          let log_with_parsed_input =
-            let updated_log = LogEntries.add first_ts entries_by_file log in
-            (* Enter main parsing loop *)
-            parse_until_end updated_log filename input first_ts
-          in
-          close_in input;
-          log_with_parsed_input
-      )
-
-(* Given a list of (filename, start_position) pairs,
-   parse all the files into the LogEntries.t log.
-   Return the updated log, along with a list of
-   (filename, end_position) pairs.
-*)
-let merge log files =
-  List.fold_right (fun (filename, start_pos) (log, ends) ->
-    let (log, end_pos) = parse log filename start_pos in
-    (log, (filename, end_pos) :: ends)
-  ) files (log, [])
-
-(* Print the entries from the LogEntries.t log in timestamp sorted order.
-   When multiple files have entries with the same timestamp, print the entries
-   in the order they appeared in their file, and process files in the order
-   given by filenames.
-*)
-let print log filenames output =
-  LogEntries.iter (fun _ entries_by_file ->
-    List.iter (fun filename ->
-      try
-        let entries = Hashtbl.find entries_by_file filename in
-        List.iter (fun entry ->
-          BatIO.nwrite output (entry ^ "\n")
-        ) (List.rev entries)
-      with Not_found -> ()
-    ) filenames
-  ) log
-
 (* Replace the first occurrence of (key, _) in lst with (key, value).
    If no binding is found, create one. *)
 let rec replace_assoc key value = function
@@ -173,6 +29,7 @@ let rec replace_assoc key value = function
       if k = key then (key, value) :: rest
       else (k, v) :: replace_assoc key value rest
 
+(* From Sk_stream *)
 let merge_streams cmp init fold l =
   match l with
       [] -> Stream.from (fun _ -> None)
@@ -218,70 +75,78 @@ let merge_streams cmp init fold l =
 (* Return a (timestamp, line) Stream.t
    made up of lines from input_path starting at position bytes,
    with a timestamp key for merging with other streams.
-*)
-(* We number each input file and make that a secondary part of the
+
+   We number each input file and make that a secondary part of the
    timestamp, so that after merging, lines from the same file that
-   share a timestamp are kept together. *)
+   share a timestamp are kept together.
+*)
 let mergeable_stream fileno (input_path, position) =
   let input = open_in input_path in
   seek_in input position;
+  (* Final position will be set at EOF *)
   let end_pos = ref 0 in
   let entry = ref None in
-  let finished_previous_entry new_data =
+  (* Save new_data as start of new entry, return previous entry *)
+  let shift new_data =
     let prev_entry = !entry in
     entry := new_data;
     prev_entry
+  in
+  (* Append lines to the current entry until the next timestamp or EOF *)
+  let rec read_more_lines () =
+    match next_line input with
+    | None ->
+        (* EOF *)
+        end_pos := pos_in input;
+        shift None
+    | Some line ->
+        (match parse_timestamp line with
+        | None ->
+            (* Continuation of previous entry *)
+            continue line
+        | Some ts ->
+            (* Start of a new entry, previous one is now complete *)
+            shift (Some ((ts, fileno), line))
+        )
+  (* Continue the current entry by appending line *)
+  and continue line =
+    match !entry with
+    | None ->
+        (* Missing initial timestamp, corrupt log or bad position *)
+        failwith (
+          let position = pos_in input - String.length line - 1 in
+          Printf.sprintf
+            "Error parsing log file %s at position %d: \
+             expected timestamped line, got:\n%s"
+            input_path position line
+        )
+    | Some ((ts, fileno), rest) ->
+        entry := Some ((ts, fileno), rest ^ "\n" ^ line);
+        read_more_lines ()
   in
   let stream =
     Stream.from (fun _ ->
       match next_line input with
       | None ->
+          (* EOF *)
           end_pos := pos_in input;
-          finished_previous_entry None
+          shift None
       | Some line ->
-          let rec read_more_lines () =
-            match next_line input with
-            | None ->
-                end_pos := pos_in input;
-                finished_previous_entry None
-            | Some line ->
-                (match parse_timestamp line with
-                | None ->
-                    (* Must be a continuation of the previous entry *)
-                    (match !entry with
-                    | None -> assert false
-                    | Some ((ts, fileno), lines) ->
-                        entry := Some ((ts, fileno), lines ^ "\n" ^ line);
-                        read_more_lines ()
-                    )
-                | Some ts ->
-                    (* Start of a new entry, which means the previous one
-                       is now completed. Return it, and save the new data
-                       for the next round. *)
-                    finished_previous_entry (Some ((ts, fileno), line))
-                )
-          in
           (match parse_timestamp line with
           | None ->
-              (* No timestamp means this line is a continuation of the
-                 previous entry. Keep reading lines until we complete the
-                 entry or run out of data to read. *)
-              (match !entry with
-              | None -> assert false
-              | Some ((ts, fileno), lines) ->
-                  entry := Some ((ts, fileno), lines ^ "\n" ^ line);
-                  read_more_lines ()
-              )
+              (* Continuation of previous entry *)
+              continue line
           | Some ts ->
-              (* New line starting with a timestamp. Use it and save it as the
-                 most recent previous timestamp. *)
+              (* Start of a new entry, perhaps the very first one *)
               (match !entry with
               | None ->
+                  (* For the first entry, we have nothing previous to return,
+                     so we must keep reading until the entry is complete *)
                   entry := Some ((ts, fileno), line);
                   read_more_lines ()
-              | Some prev_entry ->
+              | prev_entry ->
                   entry := Some ((ts, fileno), line);
-                  Some prev_entry
+                  prev_entry
               )
           )
     )
@@ -308,22 +173,29 @@ let append_new_entries ~from_inputs ~at_positions ~to_output =
   in
   (* Merge from the start positions and print the result *)
   let input_streams = List.mapi mergeable_stream positioned_inputs in
-  let input_streams = List.map (fun (s, i, e) ->
-    Stream.from (fun _ ->
-      match Stream.npeek 2 s with
-      | [] -> None
-      | [last] ->
-          let (_, final) = Stream.next s in
-          e := !e - String.length final - 1;
-          None
-      | _ -> Some (Stream.next s)
-    ), i, e
-  ) input_streams in
+  let truncated_streams =
+    List.map (fun (stream, input_path, end_pos) ->
+      (* Drop the last entry from stream and update end_pos accordingly *)
+      let truncated =
+        Stream.from (fun _ ->
+          match Stream.npeek 2 stream with
+          | [] -> None
+          | [_] ->
+              let (_, last) = Stream.next stream in
+              end_pos := !end_pos - String.length last - 1;
+              None
+          | [_; _] -> Some (Stream.next stream)
+          | _ -> assert false
+        )
+      in
+      (truncated, input_path, end_pos)
+    ) input_streams
+  in
   let init _ = "" in
   let fold accu line = if accu = "" then line else accu ^ "\n" ^ line in
   let data (stream, _, _) = stream in
   let merged =
-    merge_streams compare init fold (List.map data input_streams)
+    merge_streams compare init fold (List.map data truncated_streams)
   in
   Stream.iter (fun (_, line) ->
     BatIO.nwrite to_output (line ^ "\n")
@@ -332,33 +204,12 @@ let append_new_entries ~from_inputs ~at_positions ~to_output =
   let end_positions =
     List.fold_left (fun positions (_, filename, end_pos) ->
       replace_assoc filename (`Int !end_pos) positions
-    ) (to_assoc start_positions) input_streams
+    ) (to_assoc start_positions) truncated_streams
   in
   let positions_file = open_out at_positions in
   let json_data = Yojson.Basic.to_string (`Assoc end_positions) in
   output_string positions_file (json_data ^ "\n");
   close_out positions_file
- 
-  (*
-  (* Merge from the start positions and print the result *)
-  (*
-  let log = LogEntries.empty in
-  let (merged, end_inputs) = merge log positioned_inputs in
-  print merged (List.map fst end_inputs) to_output;
-  *)
-  let (merged, end_inputs) = assert false in
-
-  (* Save our end positions to the JSON file *)
-  let end_positions =
-    List.fold_left (fun positions (filename, end_pos) ->
-      replace_assoc filename (`Int end_pos) positions
-    ) (to_assoc start_positions) end_inputs
-  in
-  let positions_file = open_out at_positions in
-  let json_data = Yojson.Basic.to_string (`Assoc end_positions) in
-  output_string positions_file (json_data ^ "\n");
-  close_out positions_file
-  *)
 
 let main ~offset =
   let dirlist = Array.to_list (Sys.readdir Log.log_folder) in
