@@ -29,49 +29,6 @@ let rec replace_assoc key value = function
       if k = key then (key, value) :: rest
       else (k, v) :: replace_assoc key value rest
 
-(* From Sk_stream *)
-let merge_streams cmp init fold l =
-  match l with
-      [] -> Stream.from (fun _ -> None)
-    | l ->
-        let next i =
-          let opt =
-            List.fold_left (
-              fun opt st ->
-                match opt, Stream.peek st with
-                    _, None -> opt
-                  | Some key0, Some (key, _) ->
-                      let c = cmp key0 key in
-                      if c <= 0 then opt
-                      else Some key
-                  | None, Some (key, _) ->
-                      Some key
-            ) None l
-          in
-          match opt with
-              None -> None
-            | Some key ->
-                let accu = init key in
-                let result =
-                  List.fold_left (
-                    fun accu st ->
-                      match Stream.peek st with
-                          Some (k, v) ->
-                            if cmp key k = 0 then (
-                              Stream.junk st;
-                              fold accu v
-                            )
-                            else
-                              accu
-                        | None ->
-                            accu
-                  ) accu l
-                in
-                Some (key, result)
-        in
-        Stream.from next
-;;
-
 (* Return a (timestamp, line) Stream.t
    made up of lines from input_path starting at position bytes,
    with a timestamp key for merging with other streams.
@@ -195,7 +152,7 @@ let append_new_entries ~from_inputs ~at_positions ~to_output =
   let fold accu line = if accu = "" then line else accu ^ "\n" ^ line in
   let data (stream, _, _) = stream in
   let merged =
-    merge_streams compare init fold (List.map data truncated_streams)
+    Util_stream.merge compare init fold (List.map data truncated_streams)
   in
   Stream.iter (fun (_, line) ->
     BatIO.nwrite to_output (line ^ "\n")
