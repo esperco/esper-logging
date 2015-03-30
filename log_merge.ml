@@ -173,6 +173,121 @@ let rec replace_assoc key value = function
       if k = key then (key, value) :: rest
       else (k, v) :: replace_assoc key value rest
 
+let merge_streams cmp init fold l =
+  match l with
+      [] -> Stream.from (fun _ -> None)
+    | l ->
+        let next i =
+          let opt =
+            List.fold_left (
+              fun opt st ->
+                match opt, Stream.peek st with
+                    _, None -> opt
+                  | Some key0, Some (key, _) ->
+                      let c = cmp key0 key in
+                      if c <= 0 then opt
+                      else Some key
+                  | None, Some (key, _) ->
+                      Some key
+            ) None l
+          in
+          match opt with
+              None -> None
+            | Some key ->
+                let accu = init key in
+                let result =
+                  List.fold_left (
+                    fun accu st ->
+                      match Stream.peek st with
+                          Some (k, v) ->
+                            if cmp key k = 0 then (
+                              Stream.junk st;
+                              fold accu v
+                            )
+                            else
+                              accu
+                        | None ->
+                            accu
+                  ) accu l
+                in
+                Some (key, result)
+        in
+        Stream.from next
+;;
+
+(* Return a (timestamp, line) Stream.t
+   made up of lines from input_path starting at position bytes,
+   with a timestamp key for merging with other streams.
+*)
+(* We number each input file and make that a secondary part of the
+   timestamp, so that after merging, lines from the same file that
+   share a timestamp are kept together. *)
+let mergeable_stream fileno (input_path, position) =
+  let input = open_in input_path in
+  seek_in input position;
+  let end_pos = ref 0 in
+  let entry = ref None in
+  let finished_previous_entry new_data =
+    let prev_entry = !entry in
+    entry := new_data;
+    prev_entry
+  in
+  let stream =
+    Stream.from (fun _ ->
+      match next_line input with
+      | None ->
+          end_pos := pos_in input;
+          finished_previous_entry None
+      | Some line ->
+          let rec read_more_lines () =
+            match next_line input with
+            | None ->
+                end_pos := pos_in input;
+                finished_previous_entry None
+            | Some line ->
+                (match parse_timestamp line with
+                | None ->
+                    (* Must be a continuation of the previous entry *)
+                    (match !entry with
+                    | None -> assert false
+                    | Some ((ts, fileno), lines) ->
+                        entry := Some ((ts, fileno), lines ^ "\n" ^ line);
+                        read_more_lines ()
+                    )
+                | Some ts ->
+                    (* Start of a new entry, which means the previous one
+                       is now completed. Return it, and save the new data
+                       for the next round. *)
+                    finished_previous_entry (Some ((ts, fileno), line))
+                )
+          in
+          (match parse_timestamp line with
+          | None ->
+              (* No timestamp means this line is a continuation of the
+                 previous entry. Keep reading lines until we complete the
+                 entry or run out of data to read. *)
+              (match !entry with
+              | None -> assert false
+              | Some ((ts, fileno), lines) ->
+                  entry := Some ((ts, fileno), lines ^ "\n" ^ line);
+                  read_more_lines ()
+              )
+          | Some ts ->
+              (* New line starting with a timestamp. Use it and save it as the
+                 most recent previous timestamp. *)
+              (match !entry with
+              | None ->
+                  entry := Some ((ts, fileno), line);
+                  read_more_lines ()
+              | Some prev_entry ->
+                  entry := Some ((ts, fileno), line);
+                  Some prev_entry
+              )
+          )
+    )
+  in
+  (stream, input_path, end_pos)
+
 let append_new_entries ~from_inputs ~at_positions ~to_output =
   let open Yojson.Basic.Util in
   (* Read start positions from JSON file *)
@@ -192,9 +307,47 @@ let append_new_entries ~from_inputs ~at_positions ~to_output =
     ) from_inputs
   in
   (* Merge from the start positions and print the result *)
+  let input_streams = List.mapi mergeable_stream positioned_inputs in
+  let input_streams = List.map (fun (s, i, e) ->
+    Stream.from (fun _ ->
+      match Stream.npeek 2 s with
+      | [] -> None
+      | [last] ->
+          let (_, final) = Stream.next s in
+          e := !e - String.length final - 1;
+          None
+      | _ -> Some (Stream.next s)
+    ), i, e
+  ) input_streams in
+  let init _ = "" in
+  let fold accu line = if accu = "" then line else accu ^ "\n" ^ line in
+  let data (stream, _, _) = stream in
+  let merged =
+    merge_streams compare init fold (List.map data input_streams)
+  in
+  Stream.iter (fun (_, line) ->
+    BatIO.nwrite to_output (line ^ "\n")
+  ) merged;
+  (* Save our end positions to the JSON file *)
+  let end_positions =
+    List.fold_left (fun positions (_, filename, end_pos) ->
+      replace_assoc filename (`Int !end_pos) positions
+    ) (to_assoc start_positions) input_streams
+  in
+  let positions_file = open_out at_positions in
+  let json_data = Yojson.Basic.to_string (`Assoc end_positions) in
+  output_string positions_file (json_data ^ "\n");
+  close_out positions_file
+ 
+  (*
+  (* Merge from the start positions and print the result *)
+  (*
   let log = LogEntries.empty in
   let (merged, end_inputs) = merge log positioned_inputs in
   print merged (List.map fst end_inputs) to_output;
+  *)
+  let (merged, end_inputs) = assert false in
+
   (* Save our end positions to the JSON file *)
   let end_positions =
     List.fold_left (fun positions (filename, end_pos) ->
@@ -205,6 +358,7 @@ let append_new_entries ~from_inputs ~at_positions ~to_output =
   let json_data = Yojson.Basic.to_string (`Assoc end_positions) in
   output_string positions_file (json_data ^ "\n");
   close_out positions_file
+  *)
 
 let main ~offset =
   let dirlist = Array.to_list (Sys.readdir Log.log_folder) in
