@@ -130,6 +130,9 @@ let append_new_entries ~from_inputs ~at_positions ~to_output =
   in
   (* Merge from the start positions and print the result *)
   let input_streams = List.mapi mergeable_stream positioned_inputs in
+  (* It's not safe to merge beyond the timestamp of the
+     earliest discarded entry from any of the input streams *)
+  let max_ts = ref (Nldate.create (float_of_int max_int)) in
   let truncated_streams =
     List.map (fun (stream, input_path, end_pos) ->
       (* Drop the last entry from stream and update end_pos accordingly *)
@@ -138,8 +141,9 @@ let append_new_entries ~from_inputs ~at_positions ~to_output =
           match Stream.npeek 2 stream with
           | [] -> None
           | [_] ->
-              let (_, last) = Stream.next stream in
+              let ((ts, _), last) = Stream.next stream in
               end_pos := !end_pos - String.length last - 1;
+              max_ts := min ts !max_ts;
               None
           | [_; _] -> Some (Stream.next stream)
           | _ -> assert false
@@ -154,8 +158,12 @@ let append_new_entries ~from_inputs ~at_positions ~to_output =
   let merged =
     Util_stream.merge compare init fold (List.map data truncated_streams)
   in
-  Stream.iter (fun (_, line) ->
-    BatIO.nwrite to_output (line ^ "\n")
+  Stream.iter (fun ((ts, fileno), line) ->
+    if (ts >= !max_ts) then
+      let (_, _, end_pos) = List.nth truncated_streams fileno in
+      end_pos := !end_pos - String.length line - 1
+    else
+      BatIO.nwrite to_output (line ^ "\n")
   ) merged;
   (* Save our end positions to the JSON file *)
   let end_positions =
@@ -190,68 +198,165 @@ let main ~offset =
   BatIO.close_out output
 
 module Test = struct
+
+  let foo_data_1 = "\
+[2015-01-23T00:00:01.000-08:00] To be, or not to be, that is the question—
+[2015-01-23T00:00:02.000-08:00] To die, to sleep—
+No more; and by a sleep, to say we end
+The Heart-ache, and the thousand Natural shocks
+That Flesh is heir to?\n"
+
+  let foo_data_2 = "\
+[2015-01-23T00:04:01.000-08:00] To die, to sleep,
+To sleep, perchance to Dream;
+[2015-01-23T00:05:00.000-08:00] For who would bear the Whips and Scorns of time,
+[2015-01-23T00:06:00.000-08:00] The Oppressor's wrong, the proud man's Contumely,\n"
+
+  let foo_data_3 = "\
+[2015-01-23T00:09:00.000-08:00] Who would these Fardels bear,
+To grunt and sweat under a weary life,
+But that the dread of something after death,
+The undiscovered Country, from whose bourn
+No Traveller returns, Puzzles the will,
+And makes us rather bear those ills we have,
+Than fly to others that we know not of.
+[2015-01-23T00:20:00.000-08:00] And thus the Native hue of Resolution
+Is sicklied o'er, with the pale cast of Thought,
+[2015-01-23T10:00:00.000-08:00] THIS ENTRY SHOULD NOT BE MERGED\n"
+
+  let bar_data_1 = "\
+[2015-01-23T00:03:00.000-08:00] 'Tis a consummation
+Devoutly to be wished.\n"
+
+  let bar_data_2 = "\
+[2015-01-23T00:04:03.000-08:00] There's the respect
+That makes Calamity of so long life:
+[2015-01-23T00:08:00.000-08:00] The insolence of Office, and the Spurns
+That patient merit of the unworthy takes,\n"
+
+  let bar_data_3 = "\
+When he himself might his Quietus make
+With a bare Bodkin?
+[2015-01-23T00:10:00.000-08:00] Thus Conscience does make Cowards of us all,
+[2015-01-23T00:30:00.000-08:00] And enterprises of great pitch and moment,
+[2015-01-23T00:40:00.000-08:00] With this regard their Currents turn awry,
+[2015-01-23T10:00:00.000-08:00] THIS ENTRY SHOULD NOT BE MERGED\n"
+
+  let baz_data_1 = "\
+[2015-01-23T00:00:01.200-08:00] Whether 'tis Nobler in the mind to suffer
+The Slings and Arrows of outrageous Fortune,
+Or to take Arms against a Sea of troubles,\n"
+
+  let baz_data_2 = "\
+And by opposing, end them?
+[2015-01-23T00:04:02.000-08:00] Aye, there's the rub,
+For in that sleep of death, what dreams may come,
+When we have shuffled off this mortal coil,
+Must give us pause.
+[2015-01-23T00:07:00.000-08:00] The pangs of despised Love, the Law’s delay,\n"
+
+  let baz_data_3 = "\
+[2015-01-23T00:50:00.000-08:00] And lose the name of Action.
+[2015-01-23T10:00:00.000-08:00] THIS ENTRY SHOULD NOT BE MERGED\n"
+
+  let expected = "\
+[2015-01-23T00:00:01.000-08:00] To be, or not to be, that is the question—
+[2015-01-23T00:00:01.200-08:00] Whether 'tis Nobler in the mind to suffer
+The Slings and Arrows of outrageous Fortune,
+Or to take Arms against a Sea of troubles,
+And by opposing, end them?
+[2015-01-23T00:00:02.000-08:00] To die, to sleep—
+No more; and by a sleep, to say we end
+The Heart-ache, and the thousand Natural shocks
+That Flesh is heir to?
+[2015-01-23T00:03:00.000-08:00] 'Tis a consummation
+Devoutly to be wished.
+[2015-01-23T00:04:01.000-08:00] To die, to sleep,
+To sleep, perchance to Dream;
+[2015-01-23T00:04:02.000-08:00] Aye, there's the rub,
+For in that sleep of death, what dreams may come,
+When we have shuffled off this mortal coil,
+Must give us pause.
+[2015-01-23T00:04:03.000-08:00] There's the respect
+That makes Calamity of so long life:
+[2015-01-23T00:05:00.000-08:00] For who would bear the Whips and Scorns of time,
+[2015-01-23T00:06:00.000-08:00] The Oppressor's wrong, the proud man's Contumely,
+[2015-01-23T00:07:00.000-08:00] The pangs of despised Love, the Law’s delay,
+[2015-01-23T00:08:00.000-08:00] The insolence of Office, and the Spurns
+That patient merit of the unworthy takes,
+When he himself might his Quietus make
+With a bare Bodkin?
+[2015-01-23T00:09:00.000-08:00] Who would these Fardels bear,
+To grunt and sweat under a weary life,
+But that the dread of something after death,
+The undiscovered Country, from whose bourn
+No Traveller returns, Puzzles the will,
+And makes us rather bear those ills we have,
+Than fly to others that we know not of.
+[2015-01-23T00:10:00.000-08:00] Thus Conscience does make Cowards of us all,
+[2015-01-23T00:20:00.000-08:00] And thus the Native hue of Resolution
+Is sicklied o'er, with the pale cast of Thought,
+[2015-01-23T00:30:00.000-08:00] And enterprises of great pitch and moment,
+[2015-01-23T00:40:00.000-08:00] With this regard their Currents turn awry,
+[2015-01-23T00:50:00.000-08:00] And lose the name of Action.\n"
+
   let test_log_merge () =
-    (* Create two temp files, write some sample log data *)
+    (* Create the temporary files, write some sample log data *)
     let foo_path = "/tmp/foo.test.log" in
     let bar_path = "/tmp/bar.test.log" in
-    let foo_data_1 = "\
-[2015-02-19T10:29:54.482-08:00] foo line 1
-[2015-02-19T10:30:28.137-08:00] foo line 2, continued below
-continuation of foo line 2
-[2015-02-19T10:31:27.003-08:00] foo line 3\n" in
-    let bar_data_1 = "\
-[2015-02-19T10:29:54.528-08:00] bar line 1
-[2015-02-19T10:30:28.137-08:00] bar line 2
-[2015-02-19T10:32:03.423-08:00] bar line 3, continued below\n" in
+    let baz_path = "/tmp/baz.test.log" in
     let foo_out = open_out foo_path in
     let bar_out = open_out bar_path in
+    let baz_out = open_out baz_path in
     output_string foo_out foo_data_1; flush foo_out;
     output_string bar_out bar_data_1; flush bar_out;
+    output_string baz_out baz_data_1; flush baz_out;
 
     (* Merge the first round of log data *)
     let positions_path = "/tmp/positions.json" in
     (try Unix.unlink positions_path with Unix.Unix_error _ -> ()); (* rm *)
     let string_buffer = BatIO.output_string () in
     append_new_entries
-      ~from_inputs:[foo_path; bar_path]
+      ~from_inputs:[foo_path; bar_path; baz_path]
       ~at_positions:positions_path
       ~to_output:string_buffer;
 
     (* Append some more log data to the temp files *)
-    let foo_data_2 = "\
-[2015-02-19T10:31:27.003-08:00] foo line 4
-[2015-02-19T10:33:42.921-08:00] foo line 5
-[2015-02-19T10:45:54.162-08:00] foo line 6\n" in
-    let bar_data_2 = "\
-continuation of bar line 3 part 1/2
-continuation of bar line 3 part 2/2
-[2015-02-19T10:34:12.456-08:00] bar line 4\n" in
-    output_string foo_out foo_data_2; close_out foo_out;
-    output_string bar_out bar_data_2; close_out bar_out;
-
-    (* Merge the second round, starting from where the first left off *)
+    output_string foo_out foo_data_2; flush foo_out;
+    output_string bar_out bar_data_2; flush bar_out;
+    output_string baz_out baz_data_2; flush baz_out;
     append_new_entries
-      ~from_inputs:[foo_path; bar_path]
+      ~from_inputs:[foo_path; bar_path; baz_path]
+      ~at_positions:positions_path
+      ~to_output:string_buffer;
+
+    output_string foo_out foo_data_3; close_out foo_out;
+    output_string bar_out bar_data_3; close_out bar_out;
+    output_string baz_out baz_data_3; close_out baz_out;
+    append_new_entries
+      ~from_inputs:[foo_path; bar_path; baz_path]
       ~at_positions:positions_path
       ~to_output:string_buffer;
 
     (* The result should be sorted and missing the last line of each file *)
     let result = BatIO.close_out string_buffer in
-    let expected = "\
-[2015-02-19T10:29:54.482-08:00] foo line 1
-[2015-02-19T10:29:54.528-08:00] bar line 1
-[2015-02-19T10:30:28.137-08:00] foo line 2, continued below
-continuation of foo line 2
-[2015-02-19T10:30:28.137-08:00] bar line 2
-[2015-02-19T10:31:27.003-08:00] foo line 3
-[2015-02-19T10:31:27.003-08:00] foo line 4
-[2015-02-19T10:32:03.423-08:00] bar line 3, continued below
-continuation of bar line 3 part 1/2
-continuation of bar line 3 part 2/2
-[2015-02-19T10:33:42.921-08:00] foo line 5\n" in
     result = expected
 
   let tests = [("test_log_merge", test_log_merge)]
+
+  let check_sorted file =
+    let input = open_in file in
+    let rec read prev_ts =
+      match next_line input with
+      | None -> true
+      | Some line ->
+          (match parse_timestamp line with
+          | None -> read prev_ts
+          | Some ts -> if ts >= prev_ts then read ts else false
+          )
+    in
+    read (Nldate.create 0.)
+
 end
 
 let tests = Test.tests
