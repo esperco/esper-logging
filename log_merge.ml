@@ -37,7 +37,7 @@ let rec replace_assoc key value = function
    timestamp, so that after merging, lines from the same file that
    share a timestamp are kept together.
 *)
-let mergeable_stream fileno (input_path, position) =
+let mergeable_stream fileno (input_path, finalized, position) =
   let input = open_in input_path in
   seek_in input position;
   (* Final position will be set at EOF *)
@@ -108,7 +108,7 @@ let mergeable_stream fileno (input_path, position) =
           )
     )
   in
-  (stream, input_path, end_pos)
+  (stream, input_path, finalized, end_pos)
 
 let append_new_entries ~from_inputs ~at_positions ~to_output =
   let open Yojson.Basic.Util in
@@ -122,10 +122,10 @@ let append_new_entries ~from_inputs ~at_positions ~to_output =
   in
   (* Look up the position for each input file *)
   let positioned_inputs =
-    List.map (fun input_path ->
+    List.map (fun (input_path, finalized) ->
       match member input_path start_positions |> to_int_option with
-      | None -> (input_path, 0)
-      | Some i -> (input_path, i)
+      | None -> (input_path, finalized, 0)
+      | Some i -> (input_path, finalized, i)
     ) from_inputs
   in
   (* Merge from the start positions and print the result *)
@@ -134,7 +134,8 @@ let append_new_entries ~from_inputs ~at_positions ~to_output =
      earliest discarded entry from any of the input streams *)
   let max_ts = ref (Nldate.create (float_of_int max_int)) in
   let truncated_streams =
-    List.map (fun (stream, input_path, end_pos) ->
+    List.map (fun (stream, input_path, finalized, end_pos) ->
+      if finalized then (stream, input_path, end_pos) else
       (* Drop the last entry from stream and update end_pos accordingly *)
       let truncated =
         Stream.from (fun _ ->
@@ -185,6 +186,21 @@ let main ~offset =
       else None
     ) dirlist
   in
+  let finalized_inputs =
+    List.map (fun filename ->
+      let last_dot = String.rindex filename '.' + 1 in
+      let suffix =
+        String.(sub filename last_dot (length filename - last_dot))
+      in
+      let next_version = string_of_int (int_of_string suffix + 1) in
+      let finalized =
+        List.exists (fun other_file ->
+          BatString.ends_with other_file ("." ^ next_version)
+        ) inputs
+      in
+      (filename, finalized)
+    ) inputs
+  in
   let output =
     BatFile.open_out
       ~mode:[`create; `append]
@@ -192,7 +208,7 @@ let main ~offset =
       log_merge_output
   in
   append_new_entries
-    ~from_inputs:inputs
+    ~from_inputs:finalized_inputs
     ~at_positions:positions_file
     ~to_output:output;
   BatIO.close_out output
@@ -300,6 +316,8 @@ Is sicklied o'er, with the pale cast of Thought,
 [2015-01-23T00:40:00.000-08:00] With this regard their Currents turn awry,
 [2015-01-23T00:50:00.000-08:00] And lose the name of Action.\n"
 
+  let not_finalized inputs = List.map (fun x -> (x, false)) inputs
+
   let test_log_merge () =
     (* Create the temporary files, write some sample log data *)
     let foo_path = "/tmp/foo.test.log" in
@@ -317,7 +335,7 @@ Is sicklied o'er, with the pale cast of Thought,
     (try Unix.unlink positions_path with Unix.Unix_error _ -> ()); (* rm *)
     let string_buffer = BatIO.output_string () in
     append_new_entries
-      ~from_inputs:[foo_path; bar_path; baz_path]
+      ~from_inputs:(not_finalized [foo_path; bar_path; baz_path])
       ~at_positions:positions_path
       ~to_output:string_buffer;
 
@@ -326,7 +344,7 @@ Is sicklied o'er, with the pale cast of Thought,
     output_string bar_out bar_data_2; flush bar_out;
     output_string baz_out baz_data_2; flush baz_out;
     append_new_entries
-      ~from_inputs:[foo_path; bar_path; baz_path]
+      ~from_inputs:(not_finalized [foo_path; bar_path; baz_path])
       ~at_positions:positions_path
       ~to_output:string_buffer;
 
@@ -334,7 +352,7 @@ Is sicklied o'er, with the pale cast of Thought,
     output_string bar_out bar_data_3; close_out bar_out;
     output_string baz_out baz_data_3; close_out baz_out;
     append_new_entries
-      ~from_inputs:[foo_path; bar_path; baz_path]
+      ~from_inputs:(not_finalized [foo_path; bar_path; baz_path])
       ~at_positions:positions_path
       ~to_output:string_buffer;
 
