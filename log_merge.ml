@@ -135,8 +135,11 @@ let append_new_entries ~from_inputs ~at_positions ~to_output =
   let max_ts = ref (Nldate.create (float_of_int max_int)) in
   let truncated_streams =
     List.map (fun (stream, input_path, finalized, end_pos) ->
+      (* If this file is finalized (no more data will be appended),
+         we shouldn't truncate the stream *)
       if finalized then (stream, input_path, end_pos) else
-      (* Drop the last entry from stream and update end_pos accordingly *)
+      (* Otherwise, drop the last entry from the stream,
+         and update end_pos accordingly *)
       let truncated =
         Stream.from (fun _ ->
           match Stream.npeek 2 stream with
@@ -186,6 +189,9 @@ let main ~offset =
       else None
     ) dirlist
   in
+  (* An input file foo.log.1 is finalized if the input file foo.log.2
+     also exists in the log folder. We need to check this because the
+     last entry of a non-finalized file limits how far we can merge. *)
   let finalized_inputs =
     List.map (fun filename ->
       let last_dot = String.rindex filename '.' + 1 in
