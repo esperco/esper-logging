@@ -15,7 +15,7 @@ let next_line input =
 (* Extract timestamp from lines formatted like "^[timestamp] ...$" *)
 let parse_timestamp line =
   try
-    let subs = Pcre.exec ~pat:"^\\[(\\d[^]]*)\\]" line in
+    let subs = Pcre.exec ~pat:"^\\[(\\d[0-9T.:+-]*)\\]" line in
     Some (Nldate.parse (Pcre.get_substring subs 1))
   with
   | Not_found -> None
