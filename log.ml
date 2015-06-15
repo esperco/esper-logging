@@ -20,9 +20,10 @@ let string_of_level = function
   | `Critical -> "critical"
 
 let date () =
+  (* Timezone can be set via the TZ environment variable,
+     e.g. TZ=America/Los_Angeles for Pacific time *)
   let t = Unix.gettimeofday () in
-  (* Pacific time always *)
-  Nldate.mk_internet_date ~localzone:false ~zone:(-480) ~digits:3 t
+  Nldate.mk_internet_date ~localzone:true ~digits:3 t
 
 let int = function
   | `Debug -> 0
