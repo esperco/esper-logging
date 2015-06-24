@@ -60,9 +60,10 @@ let with_request_id f =
 
 let log level s =
   if int level >= int !min_level then
-    eprintf "[%s] %s[%s] [%s] %s\n%!"
+    eprintf "[%s] %s [%i] [%s] [%s] %s\n%!"
       (date ())
       !service
+      (Unix.getpid ())
       (string_of_level level)
       (get_request_id ())
       (hide_sensitive_fields s)
