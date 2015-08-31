@@ -76,7 +76,7 @@ let debug f =
     log `Debug (f ())
 
 let string_of_exn e =
-  Util_exn.string_of_exn e
+  Trax.to_string e
 
 let tests = [
   "hide_sensitive_fields", (fun () ->
