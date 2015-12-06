@@ -33,7 +33,7 @@ let int = function
   | `Critical -> 4
 
 let sensitive_fields_re =
-  Pcre.regexp ~flags:[`CASELESS] "(?<=password|facebook_token).{0,20}"
+  Pcre.regexp ~flags:[`CASELESS] "(?<=password|_token).{0,20}"
 
 let hide_sensitive_fields s =
   Pcre.substitute
