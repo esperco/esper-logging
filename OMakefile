@@ -2,7 +2,6 @@ OCAML_LIBS = $(OCAML_LIBS_logging)
 
 FILES[] =
   log
-  log_merge
 
 OCamlLibrary(logging, $(FILES))
 Meta(logging)
@@ -11,4 +10,4 @@ Meta(logging)
 
 .PHONY: clean
 clean:
-  rm -f *.o *.a *.cm* *~ *.annot *.run *.opt META $(ATDGEN_OUTFILES)
+  rm -f *.o *.a *.cm* *~ *.annot *.run *.opt META
