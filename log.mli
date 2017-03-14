@@ -1,6 +1,6 @@
 type level = [ `Debug | `Info | `Warning | `Error | `Critical ]
 
-val log_folder : string
+val log_folder : unit -> string
   (** Folder to store logs files *)
 
 val level : level ref

@@ -5,7 +5,11 @@ type level = [ `Debug | `Info | `Warning | `Error | `Critical ]
 
 let min_level = ref `Info
 let level = min_level
-let log_folder = "/var/log/wolverine"
+let log_folder () =
+  try
+    Sys.getenv "WVLOG"
+  with Not_found ->
+    failwith "Undefined environment variable WVLOG"
 
 let service = ref ""
 
