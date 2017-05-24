@@ -11,10 +11,15 @@ let log_folder () =
   with Not_found ->
     failwith "Undefined environment variable WVLOG"
 
-let service = ref ""
+let service = ref None
+let service_string = ref ""
+
+let get_service () =
+  !service
 
 let set_service s =
-  service := "[" ^ s ^ "] "
+  service := Some s;
+  service_string := "[" ^ s ^ "] "
 
 let string_of_level = function
   | `Debug -> "debug"
@@ -66,7 +71,7 @@ let log level s =
   if int level >= int !min_level then
     eprintf "[%s] %s [%i] [%s] [%s] %s\n%!"
       (date ())
-      !service
+      !service_string
       (Unix.getpid ())
       (string_of_level level)
       (get_request_id ())

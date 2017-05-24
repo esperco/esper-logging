@@ -6,6 +6,7 @@ val log_folder : unit -> string
 val level : level ref
   (** Log level. Initial value: [`Info] *)
 
+val get_service : unit -> string option
 val set_service : string -> unit
   (** Name of the current service.
       If defined, this is printed between square brackets
